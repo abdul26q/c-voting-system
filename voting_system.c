@@ -44,15 +44,19 @@ int generate_election_id() {
 void url_decode(char *dst, const char *src) {
     char a, b;
     while (*src) {
-        if ((*src == '%') && ((a = src[1]) && (b = src[2])) && (isxdigit(a) && isxdigit(b))) {
-            if (a >= 'a') a -= 'a'-'A';
+        if ((*src == '%') && ((a = src[1]) && (b = src[2])) && (isxdigit((unsigned char)a) && isxdigit((unsigned char)b))) {
+            if (a >= 'a') a -= 'a' - 'A';
             if (a >= 'A') a -= ('A' - 10); else a -= '0';
-            if (b >= 'a') b -= 'a'-'A';
+            if (b >= 'a') b -= 'a' - 'A';
             if (b >= 'A') b -= ('A' - 10); else b -= '0';
-            *dst++ = 16*a+b;
-            src+=3;
-        } else if (*src == '+') { *dst++ = ' '; src++; }
-        else { *dst++ = *src++; }
+            *dst++ = (char)(16 * a + b);
+            src += 3;
+        } else if (*src == '+') {
+            *dst++ = ' ';
+            src++;
+        } else {
+            *dst++ = *src++;
+        }
     }
     *dst = '\0';
 }
@@ -65,7 +69,10 @@ char* get_form_value(const char *data, const char *key, char *value, int max_len
     if (!start) return NULL;
     start += strlen(search);
     int i = 0;
-    while (start[i] && start[i] != '&' && i < max_len - 1) { value[i] = start[i]; i++; }
+    while (start[i] && start[i] != '&' && i < max_len - 1) {
+        value[i] = start[i];
+        i++;
+    }
     value[i] = '\0';
     url_decode(value, value);
     return value;
@@ -92,7 +99,7 @@ void send_redirect(int client, const char *location) {
 }
 
 // Shared CSS & Head (Tailwind + Custom Animations)
-const char *HEAD = 
+const char *HEAD =
     "<!DOCTYPE html><html lang='en'><head><meta charset='utf-8'>"
     "<meta name='viewport' content='width=device-width,initial-scale=1'>"
     "<title>VotePro | Shape the Future</title>"
@@ -128,7 +135,7 @@ void build_page(char *buf, const char *body) {
 void page_landing(char *buf, const char *base_url) {
     char elections_html[8192] = "";
     char temp[1024];
-    
+
     for (int i = 0; i < election_count; i++) {
         sprintf(temp,
             "<div class='glass rounded-2xl p-8 hover:bg-white/10 transition-all duration-300 group'>"
@@ -177,7 +184,7 @@ void page_landing(char *buf, const char *base_url) {
         "<footer class='text-center py-8 text-white/40 text-sm'>Built with C Sockets | No frameworks</footer>"
         "</div>",
         base_url, base_url, base_url, elections_html);
-    
+
     build_page(buf, body);
 }
 
@@ -270,15 +277,20 @@ void page_admin_dashboard(char *buf, const char *base_url) {
 // Voting Page
 void page_vote(char *buf, const char *base_url, int election_id, const char *error) {
     Election *elec = NULL;
-    for (int i = 0; i < election_count; i++) { if (elections[i].id == election_id) { elec = &elections[i]; break; } }
-    
+    for (int i = 0; i < election_count; i++) {
+        if (elections[i].id == election_id) {
+            elec = &elections[i];
+            break;
+        }
+    }
+
     if (!elec || !elec->active) {
         char body[2048];
         sprintf(body, "<div class='content min-h-screen flex items-center justify-center px-6'><div class='glass rounded-2xl p-12 text-center max-w-md'><h1 class='text-3xl font-semibold mb-4'>❌ Election Unavailable</h1><p class='text-white/70 mb-8'>This election is inactive or doesn't exist.</p><a href='%s/' class='px-8 py-3 rounded-full bg-white text-black font-medium hover:bg-gray-200 transition'>Back to Home</a></div></div>", base_url);
         build_page(buf, body);
         return;
     }
-    
+
     char candidates_html[4096] = "";
     char temp[512];
     for (int i = 0; i < elec->candidate_count; i++) {
@@ -288,6 +300,11 @@ void page_vote(char *buf, const char *base_url, int election_id, const char *err
             "<div><div class='font-semibold text-lg'>%s</div><div class='text-white/60 text-sm'>%s</div></div></label>",
             i, elec->candidates[i].name, elec->candidates[i].party);
         strcat(candidates_html, temp);
+    }
+
+    char error_html[256] = "";
+    if (error[0]) {
+        sprintf(error_html, "<div class='bg-red-500/20 border border-red-500/50 text-red-400 px-4 py-3 rounded-lg mb-6 text-sm text-center'>❌ %s</div>", error);
     }
 
     char body[8192];
@@ -308,24 +325,29 @@ void page_vote(char *buf, const char *base_url, int election_id, const char *err
         "</form>"
         "<div class='text-center mt-8'><a href='%s/results/%d' class='text-white/60 hover:text-white text-sm'>📊 View Live Results</a></div>"
         "</div></div>",
-        elec->title, elec->description,
-        error[0] ? "<div class='bg-red-500/20 border border-red-500/50 text-red-400 px-4 py-3 rounded-lg mb-6 text-sm text-center'>❌</div>" : "",
+        elec->title, elec->description, error_html,
         base_url, election_id, candidates_html, base_url, election_id);
-    
-    char final_buf[BUFFER_SIZE];
-    sprintf(final_buf, body, error);
-    build_page(buf, final_buf);
+
+    build_page(buf, body);
 }
 
 // Results Page
 void page_results(char *buf, const char *base_url, int election_id) {
     Election *elec = NULL;
-    for (int i = 0; i < election_count; i++) { if (elections[i].id == election_id) { elec = &elections[i]; break; } }
-    if (!elec) { sprintf(buf, "<h1>Not found</h1>"); return; }
-    
+    for (int i = 0; i < election_count; i++) {
+        if (elections[i].id == election_id) {
+            elec = &elections[i];
+            break;
+        }
+    }
+    if (!elec) {
+        sprintf(buf, "<h1>Not found</h1>");
+        return;
+    }
+
     int total_votes = 0;
     for (int i = 0; i < elec->candidate_count; i++) total_votes += elec->candidates[i].votes;
-    
+
     char candidates_html[4096] = "";
     char temp[512];
     for (int i = 0; i < elec->candidate_count; i++) {
@@ -373,14 +395,21 @@ void page_success(char *buf, const char *base_url, int election_id) {
 }
 
 void parse_path(const char *request, char *path, int max_len) {
-    const char *start = strstr(request, " "); if (!start) { path[0] = '\0'; return; } start++;
-    const char *end = strstr(start, " "); if (!end) { path[0] = '\0'; return; }
-    int len = end - start; if (len >= max_len) len = max_len - 1;
-    strncpy(path, start, len); path[len] = '\0';
+    const char *start = strstr(request, " ");
+    if (!start) { path[0] = '\0'; return; }
+    start++;
+    const char *end = strstr(start, " ");
+    if (!end) { path[0] = '\0'; return; }
+    int len = end - start;
+    if (len >= max_len) len = max_len - 1;
+    strncpy(path, start, len);
+    path[len] = '\0';
 }
 
 int voter_already_voted(Election *elec, const char *voter_id) {
-    for (int i = 0; i < elec->voter_count; i++) { if (strcmp(elec->voter_ids[i], voter_id) == 0) return 1; }
+    for (int i = 0; i < elec->voter_count; i++) {
+        if (strcmp(elec->voter_ids[i], voter_id) == 0) return 1;
+    }
     return 0;
 }
 
@@ -396,7 +425,9 @@ int main() {
     if ((server_fd = socket(AF_INET, SOCK_STREAM, 0)) == 0) { perror("Socket failed"); exit(EXIT_FAILURE); }
     int opt = 1;
     setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
-    address.sin_family = AF_INET; address.sin_addr.s_addr = INADDR_ANY; address.sin_port = htons(PORT);
+    address.sin_family = AF_INET;
+    address.sin_addr.s_addr = INADDR_ANY;
+    address.sin_port = htons(PORT);
     if (bind(server_fd, (struct sockaddr *)&address, sizeof(address)) < 0) { perror("Bind failed"); exit(EXIT_FAILURE); }
     if (listen(server_fd, 10) < 0) { perror("Listen failed"); exit(EXIT_FAILURE); }
 
@@ -409,18 +440,7 @@ int main() {
         parse_path(buffer, path, sizeof(path));
 
         char response_body[BUFFER_SIZE] = {0};
-        char base_url[256] = {0};
-        char *host = strstr(buffer, "Host: ");
-        if (host) {
-            host += 6;
-            char *end = strstr(host, "\r\n");
-            if (end) { int len = end - host; if (len < 250) { strncpy(base_url, host, len); base_url[len] = '\0'; } }
-        }
-        if (base_url[0] == '\0') sprintf(base_url, "http://localhost:%d", PORT);
-        char *clean_base = base_url;
-        if (strncmp(clean_base, "http://", 7) == 0) clean_base += 7;
-        if (strncmp(clean_base, "https://", 8) == 0) clean_base += 8;
-        sprintf(base_url, "http://%s", clean_base);
+        const char *base_url = "";
 
         if (strncmp(buffer, "GET / ", 6) == 0 || strncmp(buffer, "GET / HTTP", 10) == 0) {
             page_landing(response_body, base_url);
@@ -446,7 +466,10 @@ int main() {
             if (body_start && election_count < MAX_ELECTIONS) {
                 body_start += 4;
                 Election *elec = &elections[election_count];
-                elec->id = generate_election_id(); elec->active = 1; elec->candidate_count = 0; elec->voter_count = 0;
+                elec->id = generate_election_id();
+                elec->active = 1;
+                elec->candidate_count = 0;
+                elec->voter_count = 0;
                 get_form_value(body_start, "title", elec->title, sizeof(elec->title));
                 get_form_value(body_start, "description", elec->description, sizeof(elec->description));
                 election_count++;
@@ -455,16 +478,23 @@ int main() {
             send_redirect(new_socket, "/admin/dashboard");
         }
         else if (strncmp(buffer, "GET /admin/election/", 20) == 0 && strstr(buffer, "/toggle")) {
-            char id_str[20] = {0}; sscanf(path, "/admin/election/%[^/]/toggle", id_str);
+            char id_str[20] = {0};
+            sscanf(path, "/admin/election/%[^/]/toggle", id_str);
             int id = atoi(id_str);
-            for (int i = 0; i < election_count; i++) { if (elections[i].id == id) { elections[i].active = !elections[i].active; break; } }
+            for (int i = 0; i < election_count; i++) {
+                if (elections[i].id == id) {
+                    elections[i].active = !elections[i].active;
+                    break;
+                }
+            }
             send_redirect(new_socket, "/admin/dashboard");
         }
         else if (strncmp(buffer, "POST /admin/candidate/add", 25) == 0) {
             char *body_start = strstr(buffer, "\r\n\r\n");
             if (body_start) {
                 body_start += 4;
-                char elec_id_str[20] = {0}; get_form_value(body_start, "election_id", elec_id_str, sizeof(elec_id_str));
+                char elec_id_str[20] = {0};
+                get_form_value(body_start, "election_id", elec_id_str, sizeof(elec_id_str));
                 int elec_id = atoi(elec_id_str);
                 for (int i = 0; i < election_count; i++) {
                     if (elections[i].id == elec_id && elections[i].candidate_count < MAX_CANDIDATES) {
@@ -481,20 +511,32 @@ int main() {
             send_redirect(new_socket, "/admin/dashboard");
         }
         else if (strncmp(buffer, "GET /vote/", 10) == 0) {
-            char id_str[20] = {0}; sscanf(path, "/vote/%[^/]", id_str);
+            char id_str[20] = {0};
+            sscanf(path, "/vote/%[^/]", id_str);
             page_vote(response_body, base_url, atoi(id_str), "");
             send_response(new_socket, 200, "OK", response_body);
         }
         else if (strncmp(buffer, "POST /vote/", 11) == 0) {
-            char id_str[20] = {0}; sscanf(path, "/vote/%[^/]", id_str);
+            char id_str[20] = {0};
+            sscanf(path, "/vote/%[^/]", id_str);
             int id = atoi(id_str);
             char *body_start = strstr(buffer, "\r\n\r\n");
             char voter_id[100] = {0}, cand_id_str[20] = {0};
-            if (body_start) { body_start += 4; get_form_value(body_start, "voter_id", voter_id, sizeof(voter_id)); get_form_value(body_start, "candidate_id", cand_id_str, sizeof(cand_id_str)); }
-            int cand_id = atoi(cand_id_str); int voted = 0;
+            if (body_start) {
+                body_start += 4;
+                get_form_value(body_start, "voter_id", voter_id, sizeof(voter_id));
+                get_form_value(body_start, "candidate_id", cand_id_str, sizeof(cand_id_str));
+            }
+            int cand_id = atoi(cand_id_str);
+            int voted = 0;
             for (int i = 0; i < election_count; i++) {
                 if (elections[i].id == id && elections[i].active) {
-                    if (voter_already_voted(&elections[i], voter_id)) { page_vote(response_body, base_url, id, "You have already voted!"); send_response(new_socket, 200, "OK", response_body); voted = 1; break; }
+                    if (voter_already_voted(&elections[i], voter_id)) {
+                        page_vote(response_body, base_url, id, "You have already voted!");
+                        send_response(new_socket, 200, "OK", response_body);
+                        voted = 1;
+                        break;
+                    }
                     if (cand_id >= 0 && cand_id < elections[i].candidate_count) {
                         elections[i].candidates[cand_id].votes++;
                         strcpy(elections[i].voter_ids[elections[i].voter_count], voter_id);
@@ -507,14 +549,20 @@ int main() {
                     break;
                 }
             }
-            if (!voted) { page_vote(response_body, base_url, id, "Invalid election!"); send_response(new_socket, 200, "OK", response_body); }
+            if (!voted) {
+                page_vote(response_body, base_url, id, "Invalid election!");
+                send_response(new_socket, 200, "OK", response_body);
+            }
         }
         else if (strncmp(buffer, "GET /results/", 13) == 0) {
-            char id_str[20] = {0}; sscanf(path, "/results/%[^/]", id_str);
+            char id_str[20] = {0};
+            sscanf(path, "/results/%[^/]", id_str);
             page_results(response_body, base_url, atoi(id_str));
             send_response(new_socket, 200, "OK", response_body);
         }
-        else if (strncmp(buffer, "GET /admin/logout", 17) == 0) { send_redirect(new_socket, "/"); }
+        else if (strncmp(buffer, "GET /admin/logout", 17) == 0) {
+            send_redirect(new_socket, "/");
+        }
         else {
             char body[1024];
             sprintf(body, "<div class='content min-h-screen flex items-center justify-center'><h1 class='text-4xl font-semibold'>404</h1><a href='%s/' class='mt-4 px-6 py-2 rounded-full bg-white text-black'>Home</a></div>", base_url);
