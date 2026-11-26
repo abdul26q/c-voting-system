@@ -36,10 +36,23 @@ typedef struct {
 Election elections[MAX_ELECTIONS];
 int election_count = 0;
 
+// Static buffers to avoid stack bloat/corruption
+static char g_page_buf[BUFFER_SIZE];
+static char g_body_buf[BUFFER_SIZE];
+static char g_list_buf[16384];
+static char g_opts_buf[4096];
+static char g_sock_buf[BUFFER_SIZE];
+
 // Helper: Generate unique election ID
 int generate_election_id() {
-    srand((unsigned int)(time(NULL) + election_count));
-    return rand() % 90000 + 10000;
+    srand((unsigned int)(time(NULL) + election_count * 7919));
+    int id = rand() % 90000 + 10000;
+    for (int i = 0; i < election_count; i++) {
+        if (elections[i].id == id) {
+            id = 10000 + ((id + 1) % 89999);
+        }
+    }
+    return id;
 }
 
 // Helper: URL decode
@@ -112,7 +125,7 @@ void send_redirect(int client, const char *location) {
     send(client, response, strlen(response), 0);
 }
 
-// Shared CSS & Head (Tailwind + Custom Animations)
+// Shared CSS & Head
 const char *HEAD =
     "<!DOCTYPE html><html lang='en'><head><meta charset='utf-8'>"
     "<meta name='viewport' content='width=device-width,initial-scale=1'>"
@@ -140,14 +153,13 @@ const char *HEAD =
 
 const char *FOOT = "</body></html>";
 
-// Helper: Build full page
 void build_page(char *buf, const char *body) {
     snprintf(buf, BUFFER_SIZE, "%s%s%s", HEAD, body, FOOT);
 }
 
 // Landing Page
 void page_landing(char *buf, const char *base_url) {
-    char elections_html[16384] = "";
+    g_list_buf[0] = '\0';
     char temp[2048];
 
     for (int i = 0; i < election_count; i++) {
@@ -157,7 +169,8 @@ void page_landing(char *buf, const char *base_url) {
             "<h3 class='text-2xl font-semibold text-white'>%s</h3>"
             "<span class='px-3 py-1 rounded-full text-xs font-medium %s'>%s</span>"
             "</div>"
-            "<p class='text-white/70 mb-6'>%s</p>"
+            "<p class='text-white/70 mb-2'>%s</p>"
+            "<p class='text-white/40 text-xs mb-6'>Election ID: %d • Candidates: %d</p>"
             "<div class='flex gap-3'>"
             "<a href='%s/vote/%d' class='flex-1 bg-white text-black text-center py-3 rounded-full font-medium hover:bg-gray-200 transition'>🗳️ Vote Now</a>"
             "<a href='%s/results/%d' class='flex-1 glass text-white text-center py-3 rounded-full font-medium hover:bg-white/20 transition'>📊 Results</a>"
@@ -166,17 +179,17 @@ void page_landing(char *buf, const char *base_url) {
             elections[i].active ? "bg-green-500/20 text-green-400" : "bg-red-500/20 text-red-400",
             elections[i].active ? "ACTIVE" : "CLOSED",
             elections[i].description,
+            elections[i].id, elections[i].candidate_count,
             base_url, elections[i].id,
             base_url, elections[i].id);
-        strncat(elections_html, temp, sizeof(elections_html) - strlen(elections_html) - 1);
+        strncat(g_list_buf, temp, sizeof(g_list_buf) - strlen(g_list_buf) - 1);
     }
 
     if (election_count == 0) {
-        strcpy(elections_html, "<div class='col-span-2 text-center py-20 text-white/50'>No active elections yet. Check back soon.</div>");
+        strcpy(g_list_buf, "<div class='col-span-2 text-center py-20 text-white/50'>No active elections yet. Check back soon.</div>");
     }
 
-    char body[BUFFER_SIZE];
-    snprintf(body, sizeof(body),
+    snprintf(g_body_buf, sizeof(g_body_buf),
         "<div class='video-bg'><video autoplay loop muted playsinline><source src='https://d8j0ntlcm91z4.cloudfront.net/user_38xzZboKViGWJOttwIXH07lWA1P/hf_20260328_105406_16f4600d-7a92-4292-b96e-b19156c7830a.mp4' type='video/mp4'></video></div>"
         "<div class='overlay'></div>"
         "<div class='content min-h-screen flex flex-col'>"
@@ -197,15 +210,14 @@ void page_landing(char *buf, const char *base_url) {
         "</div></div></section>"
         "<footer class='text-center py-8 text-white/40 text-sm'>Built with C Sockets | No frameworks</footer>"
         "</div>",
-        base_url, base_url, base_url, elections_html);
+        base_url, base_url, base_url, g_list_buf);
 
-    build_page(buf, body);
+    build_page(buf, g_body_buf);
 }
 
 // Admin Login
 void page_admin_login(char *buf, const char *base_url, const char *error) {
-    char body[8192];
-    snprintf(body, sizeof(body),
+    snprintf(g_body_buf, sizeof(g_body_buf),
         "<div class='video-bg'><video autoplay loop muted playsinline><source src='https://d8j0ntlcm91z4.cloudfront.net/user_38xzZboKViGWJOttwIXH07lWA1P/hf_20260328_105406_16f4600d-7a92-4292-b96e-b19156c7830a.mp4' type='video/mp4'></video></div>"
         "<div class='overlay'></div>"
         "<div class='content min-h-screen flex items-center justify-center px-6'>"
@@ -222,46 +234,46 @@ void page_admin_login(char *buf, const char *base_url, const char *error) {
         "</div></div>",
         error[0] ? "<div class='bg-red-500/20 border border-red-500/50 text-red-400 px-4 py-3 rounded-lg mb-6 text-sm'>❌ Invalid password</div>" : "",
         base_url, base_url);
-    build_page(buf, body);
+    build_page(buf, g_body_buf);
 }
 
 // Admin Dashboard
 void page_admin_dashboard(char *buf, const char *base_url) {
-    char elections_html[16384] = "";
+    g_list_buf[0] = '\0';
     char temp[2048];
     for (int i = 0; i < election_count; i++) {
         snprintf(temp, sizeof(temp),
             "<div class='glass rounded-xl p-6'>"
             "<div class='flex justify-between items-start mb-4'><h3 class='text-lg font-semibold text-white'>%s</h3>"
             "<span class='text-xs px-2 py-1 rounded-full %s'>%s</span></div>"
-            "<p class='text-white/60 text-sm mb-4'>ID: %d | Voters: %d</p>"
+            "<p class='text-white/60 text-sm mb-4'>ID: %d | Candidates: %d | Voters: %d</p>"
             "<div class='flex gap-2'><a href='%s/results/%d' class='flex-1 text-center py-2 rounded-lg bg-white/10 text-sm hover:bg-white/20 transition'>Results</a>"
             "<a href='%s/admin/election/%d/toggle' class='flex-1 text-center py-2 rounded-lg %s text-sm transition'>%s</a></div></div>",
             elections[i].title,
             elections[i].active ? "bg-green-500/20 text-green-400" : "bg-red-500/20 text-red-400",
             elections[i].active ? "ACTIVE" : "CLOSED",
-            elections[i].id, elections[i].voter_count,
+            elections[i].id, elections[i].candidate_count, elections[i].voter_count,
             base_url, elections[i].id,
             base_url, elections[i].id,
             elections[i].active ? "bg-red-500/20 text-red-400 hover:bg-red-500/30" : "bg-green-500/20 text-green-400 hover:bg-green-500/30",
             elections[i].active ? "Deactivate" : "Activate");
-        strncat(elections_html, temp, sizeof(elections_html) - strlen(elections_html) - 1);
+        strncat(g_list_buf, temp, sizeof(g_list_buf) - strlen(g_list_buf) - 1);
     }
 
-    char options[4096] = "";
+    g_opts_buf[0] = '\0';
     char opt[512];
     for (int i = 0; i < election_count; i++) {
-        snprintf(opt, sizeof(opt), "<option value='%d' class='bg-gray-900'>%s</option>", elections[i].id, elections[i].title);
-        strncat(options, opt, sizeof(options) - strlen(options) - 1);
+        snprintf(opt, sizeof(opt), "<option value='%d' class='bg-gray-900 text-white'>%s (ID: %d)</option>", elections[i].id, elections[i].title, elections[i].id);
+        strncat(g_opts_buf, opt, sizeof(g_opts_buf) - strlen(g_opts_buf) - 1);
     }
 
-    char body[BUFFER_SIZE];
-    snprintf(body, sizeof(body),
+    snprintf(g_body_buf, sizeof(g_body_buf),
         "<div class='video-bg'><video autoplay loop muted playsinline><source src='https://d8j0ntlcm91z4.cloudfront.net/user_38xzZboKViGWJOttwIXH07lWA1P/hf_20260328_105406_16f4600d-7a92-4292-b96e-b19156c7830a.mp4' type='video/mp4'></video></div>"
         "<div class='overlay'></div>"
         "<div class='content min-h-screen px-6 py-12'><div class='max-w-7xl mx-auto'>"
         "<nav class='flex justify-between items-center mb-12'><div class='flex items-center gap-3'><div class='w-10 h-10 rounded-full border-2 border-white flex items-center justify-center'><div class='w-5 h-5 rounded-full bg-white'></div></div><span class='text-xl font-semibold'>VotePro Admin</span></div>"
-        "<a href='%s/admin/logout' class='px-6 py-2 rounded-full bg-red-500/20 text-red-400 hover:bg-red-500/30 transition text-sm'>Logout</a></nav>"
+        "<div class='flex gap-3'><a href='%s/' class='px-5 py-2 rounded-full bg-white/10 text-white hover:bg-white/20 transition text-sm'>Home</a>"
+        "<a href='%s/admin/logout' class='px-6 py-2 rounded-full bg-red-500/20 text-red-400 hover:bg-red-500/30 transition text-sm'>Logout</a></div></nav>"
         "<div class='grid grid-cols-1 lg:grid-cols-2 gap-8 mb-12'>"
         "<div class='glass rounded-2xl p-8'><h2 class='text-2xl font-semibold mb-6'>➕ Create Election</h2>"
         "<form method='POST' action='%s/admin/election/create'>"
@@ -284,8 +296,8 @@ void page_admin_dashboard(char *buf, const char *base_url) {
         "<h2 class='text-2xl font-semibold mb-6'>📋 Manage Elections</h2>"
         "<div class='grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6'>%s"
         "</div></div></div>",
-        base_url, base_url, base_url, options, elections_html);
-    build_page(buf, body);
+        base_url, base_url, base_url, base_url, g_opts_buf, g_list_buf);
+    build_page(buf, g_body_buf);
 }
 
 // Voting Page
@@ -299,13 +311,12 @@ void page_vote(char *buf, const char *base_url, int election_id, const char *err
     }
 
     if (!elec || !elec->active) {
-        char body[4096];
-        snprintf(body, sizeof(body), "<div class='content min-h-screen flex items-center justify-center px-6'><div class='glass rounded-2xl p-12 text-center max-w-md'><h1 class='text-3xl font-semibold mb-4'>❌ Election Unavailable</h1><p class='text-white/70 mb-8'>This election is inactive or doesn't exist.</p><a href='%s/' class='px-8 py-3 rounded-full bg-white text-black font-medium hover:bg-gray-200 transition'>Back to Home</a></div></div>", base_url);
-        build_page(buf, body);
+        snprintf(g_body_buf, sizeof(g_body_buf), "<div class='content min-h-screen flex items-center justify-center px-6'><div class='glass rounded-2xl p-12 text-center max-w-md'><h1 class='text-3xl font-semibold mb-4'>❌ Election Unavailable</h1><p class='text-white/70 mb-8'>This election is inactive or doesn't exist.</p><a href='%s/' class='px-8 py-3 rounded-full bg-white text-black font-medium hover:bg-gray-200 transition'>Back to Home</a></div></div>", base_url);
+        build_page(buf, g_body_buf);
         return;
     }
 
-    char candidates_html[8192] = "";
+    g_list_buf[0] = '\0';
     char temp[1024];
     for (int i = 0; i < elec->candidate_count; i++) {
         snprintf(temp, sizeof(temp),
@@ -313,7 +324,7 @@ void page_vote(char *buf, const char *base_url, int election_id, const char *err
             "<input type='radio' name='candidate_id' value='%d' required class='w-5 h-5 accent-blue-400'>"
             "<div><div class='font-semibold text-lg'>%s</div><div class='text-white/60 text-sm'>%s</div></div></label>",
             i, elec->candidates[i].name, elec->candidates[i].party);
-        strncat(candidates_html, temp, sizeof(candidates_html) - strlen(candidates_html) - 1);
+        strncat(g_list_buf, temp, sizeof(g_list_buf) - strlen(g_list_buf) - 1);
     }
 
     char error_html[512] = "";
@@ -321,13 +332,12 @@ void page_vote(char *buf, const char *base_url, int election_id, const char *err
         snprintf(error_html, sizeof(error_html), "<div class='bg-red-500/20 border border-red-500/50 text-red-400 px-4 py-3 rounded-lg mb-6 text-sm text-center'>❌ %s</div>", error);
     }
 
-    char body[16384];
-    snprintf(body, sizeof(body),
+    snprintf(g_body_buf, sizeof(g_body_buf),
         "<div class='video-bg'><video autoplay loop muted playsinline><source src='https://d8j0ntlcm91z4.cloudfront.net/user_38xzZboKViGWJOttwIXH07lWA1P/hf_20260328_105406_16f4600d-7a92-4292-b96e-b19156c7830a.mp4' type='video/mp4'></video></div>"
         "<div class='overlay'></div>"
         "<div class='content min-h-screen flex items-center justify-center px-6 py-12'>"
         "<div class='w-full max-w-2xl'>"
-        "<div class='text-center mb-10'><p class='text-xs sm:text-sm text-white/80 uppercase tracking-tight mb-4'>Official Ballot</p>"
+        "<div class='text-center mb-10'><p class='text-xs sm:text-sm text-white/80 uppercase tracking-tight mb-4'>Official Ballot • ID %d</p>"
         "<h1 class='text-4xl sm:text-5xl font-semibold mb-4'>%s</h1>"
         "<p class='text-white/70'>%s</p></div>"
         "%s"
@@ -339,10 +349,10 @@ void page_vote(char *buf, const char *base_url, int election_id, const char *err
         "</form>"
         "<div class='text-center mt-8'><a href='%s/results/%d' class='text-white/60 hover:text-white text-sm'>📊 View Live Results</a></div>"
         "</div></div>",
-        elec->title, elec->description, error_html,
-        base_url, election_id, candidates_html, base_url, election_id);
+        elec->id, elec->title, elec->description, error_html,
+        base_url, election_id, g_list_buf, base_url, election_id);
 
-    build_page(buf, body);
+    build_page(buf, g_body_buf);
 }
 
 // Results Page
@@ -355,14 +365,15 @@ void page_results(char *buf, const char *base_url, int election_id) {
         }
     }
     if (!elec) {
-        snprintf(buf, BUFFER_SIZE, "<h1>Not found</h1>");
+        snprintf(g_body_buf, sizeof(g_body_buf), "<div class='content min-h-screen flex items-center justify-center px-6'><div class='glass rounded-2xl p-12 text-center max-w-md'><h1 class='text-3xl font-semibold mb-4'>Election Not Found</h1><a href='%s/' class='px-8 py-3 rounded-full bg-white text-black font-medium'>Back to Home</a></div></div>", base_url);
+        build_page(buf, g_body_buf);
         return;
     }
 
     int total_votes = 0;
     for (int i = 0; i < elec->candidate_count; i++) total_votes += elec->candidates[i].votes;
 
-    char candidates_html[8192] = "";
+    g_list_buf[0] = '\0';
     char temp[1024];
     for (int i = 0; i < elec->candidate_count; i++) {
         int pct = total_votes > 0 ? (elec->candidates[i].votes * 100 / total_votes) : 0;
@@ -371,15 +382,14 @@ void page_results(char *buf, const char *base_url, int election_id) {
             "<div class='w-full bg-white/10 rounded-full h-3'><div class='bg-gradient-to-r from-blue-400 to-cyan-300 h-3 rounded-full transition-all duration-1000' style='width:%d%%'></div></div>"
             "<div class='text-right text-xs text-white/50 mt-1'>%d votes</div></div>",
             elec->candidates[i].name, elec->candidates[i].party, pct, pct, elec->candidates[i].votes);
-        strncat(candidates_html, temp, sizeof(candidates_html) - strlen(candidates_html) - 1);
+        strncat(g_list_buf, temp, sizeof(g_list_buf) - strlen(g_list_buf) - 1);
     }
 
-    char body[16384];
-    snprintf(body, sizeof(body),
+    snprintf(g_body_buf, sizeof(g_body_buf),
         "<div class='video-bg'><video autoplay loop muted playsinline><source src='https://d8j0ntlcm91z4.cloudfront.net/user_38xzZboKViGWJOttwIXH07lWA1P/hf_20260328_105406_16f4600d-7a92-4292-b96e-b19156c7830a.mp4' type='video/mp4'></video></div>"
         "<div class='overlay'></div>"
         "<div class='content min-h-screen px-6 py-12'><div class='max-w-3xl mx-auto'>"
-        "<div class='text-center mb-12'><p class='text-xs sm:text-sm text-white/80 uppercase tracking-tight mb-4'>Live Results</p>"
+        "<div class='text-center mb-12'><p class='text-xs sm:text-sm text-white/80 uppercase tracking-tight mb-4'>Live Results • Election ID %d</p>"
         "<h1 class='text-4xl sm:text-5xl font-semibold mb-4'>%s</h1>"
         "<div class='flex justify-center gap-6 mt-8'><div class='glass rounded-xl px-6 py-4'><div class='text-3xl font-bold text-blue-400'>%d</div><div class='text-xs text-white/60 uppercase tracking-wider mt-1'>Total Votes</div></div>"
         "<div class='glass rounded-xl px-6 py-4'><div class='text-3xl font-bold text-cyan-400'>%d</div><div class='text-xs text-white/60 uppercase tracking-wider mt-1'>Voters</div></div></div></div>"
@@ -387,14 +397,13 @@ void page_results(char *buf, const char *base_url, int election_id) {
         "<div class='text-center'><a href='%s/vote/%d' class='px-8 py-3 rounded-full bg-white text-black font-medium hover:bg-gray-200 transition'>🗳️ Vote Now</a>"
         "<a href='%s/' class='px-8 py-3 rounded-full glass text-white font-medium hover:bg-white/20 transition ml-4'>← Home</a></div>"
         "</div></div>",
-        elec->title, total_votes, elec->voter_count, candidates_html, base_url, election_id, base_url);
-    build_page(buf, body);
+        elec->id, elec->title, total_votes, elec->voter_count, g_list_buf, base_url, election_id, base_url);
+    build_page(buf, g_body_buf);
 }
 
 // Success Page
 void page_success(char *buf, const char *base_url, int election_id) {
-    char body[4096];
-    snprintf(body, sizeof(body),
+    snprintf(g_body_buf, sizeof(g_body_buf),
         "<div class='video-bg'><video autoplay loop muted playsinline><source src='https://d8j0ntlcm91z4.cloudfront.net/user_38xzZboKViGWJOttwIXH07lWA1P/hf_20260328_105406_16f4600d-7a92-4292-b96e-b19156c7830a.mp4' type='video/mp4'></video></div>"
         "<div class='overlay'></div>"
         "<div class='content min-h-screen flex items-center justify-center px-6'>"
@@ -405,7 +414,7 @@ void page_success(char *buf, const char *base_url, int election_id) {
         "<div class='flex gap-4'><a href='%s/results/%d' class='flex-1 py-3 rounded-full bg-white text-black font-medium hover:bg-gray-200 transition'>View Results</a>"
         "<a href='%s/' class='flex-1 py-3 rounded-full glass text-white font-medium hover:bg-white/20 transition'>Home</a></div>"
         "</div></div>", base_url, election_id, base_url);
-    build_page(buf, body);
+    build_page(buf, g_body_buf);
 }
 
 void parse_path(const char *request, char *path, int max_len) {
@@ -431,7 +440,6 @@ int main() {
     int server_fd, new_socket;
     struct sockaddr_in address;
     socklen_t addrlen = sizeof(address);
-    char buffer[BUFFER_SIZE] = {0};
 
     char *port_env = getenv("PORT");
     int PORT = port_env ? atoi(port_env) : 8080;
@@ -449,60 +457,57 @@ int main() {
 
     while (1) {
         if ((new_socket = accept(server_fd, (struct sockaddr *)&address, &addrlen)) < 0) { perror("Accept failed"); continue; }
-        memset(buffer, 0, BUFFER_SIZE);
+        memset(g_sock_buf, 0, BUFFER_SIZE);
 
-        ssize_t bytes_read = read(new_socket, buffer, BUFFER_SIZE - 1);
+        ssize_t bytes_read = read(new_socket, g_sock_buf, BUFFER_SIZE - 1);
         if (bytes_read <= 0) {
             close(new_socket);
             continue;
         }
-        buffer[bytes_read] = '\0';
+        g_sock_buf[bytes_read] = '\0';
 
-        // Ensure full POST body is read across packets if needed
-        if (strncmp(buffer, "POST ", 5) == 0) {
-            char *cl_hdr = strcasestr(buffer, "Content-Length:");
-            char *body_start = strstr(buffer, "\r\n\r\n");
+        if (strncmp(g_sock_buf, "POST ", 5) == 0) {
+            char *cl_hdr = strcasestr(g_sock_buf, "Content-Length:");
+            char *body_start = strstr(g_sock_buf, "\r\n\r\n");
             if (cl_hdr && body_start) {
                 int content_length = atoi(cl_hdr + 15);
                 body_start += 4;
-                int body_received = (int)(bytes_read - (body_start - buffer));
+                int body_received = (int)(bytes_read - (body_start - g_sock_buf));
                 while (body_received < content_length && bytes_read < BUFFER_SIZE - 1) {
-                    ssize_t more = read(new_socket, buffer + bytes_read, (size_t)(BUFFER_SIZE - 1 - bytes_read));
+                    ssize_t more = read(new_socket, g_sock_buf + bytes_read, (size_t)(BUFFER_SIZE - 1 - bytes_read));
                     if (more <= 0) break;
                     bytes_read += more;
                     body_received += (int)more;
-                    buffer[bytes_read] = '\0';
+                    g_sock_buf[bytes_read] = '\0';
                 }
             }
         }
 
         char path[512] = {0};
-        parse_path(buffer, path, sizeof(path));
-
-        char response_body[BUFFER_SIZE] = {0};
+        parse_path(g_sock_buf, path, sizeof(path));
         const char *base_url = "";
 
-        if (strncmp(buffer, "GET / ", 6) == 0 || strncmp(buffer, "GET / HTTP", 10) == 0) {
-            page_landing(response_body, base_url);
-            send_response(new_socket, 200, "OK", response_body);
+        if (strncmp(g_sock_buf, "GET / ", 6) == 0 || strncmp(g_sock_buf, "GET / HTTP", 10) == 0) {
+            page_landing(g_page_buf, base_url);
+            send_response(new_socket, 200, "OK", g_page_buf);
         }
-        else if (strncmp(buffer, "GET /admin ", 11) == 0 || strncmp(buffer, "GET /admin HTTP", 15) == 0) {
-            page_admin_login(response_body, base_url, "");
-            send_response(new_socket, 200, "OK", response_body);
+        else if (strncmp(g_sock_buf, "GET /admin ", 11) == 0 || strncmp(g_sock_buf, "GET /admin HTTP", 15) == 0) {
+            page_admin_login(g_page_buf, base_url, "");
+            send_response(new_socket, 200, "OK", g_page_buf);
         }
-        else if (strncmp(buffer, "POST /admin/login", 17) == 0) {
-            char *body_start = strstr(buffer, "\r\n\r\n");
+        else if (strncmp(g_sock_buf, "POST /admin/login", 17) == 0) {
+            char *body_start = strstr(g_sock_buf, "\r\n\r\n");
             char password[100] = {0};
             if (body_start) get_form_value(body_start + 4, "password", password, sizeof(password));
             if (strcmp(password, ADMIN_PASSWORD) == 0) send_redirect(new_socket, "/admin/dashboard");
-            else { page_admin_login(response_body, base_url, "Invalid password"); send_response(new_socket, 200, "OK", response_body); }
+            else { page_admin_login(g_page_buf, base_url, "Invalid password"); send_response(new_socket, 200, "OK", g_page_buf); }
         }
-        else if (strncmp(buffer, "GET /admin/dashboard", 20) == 0) {
-            page_admin_dashboard(response_body, base_url);
-            send_response(new_socket, 200, "OK", response_body);
+        else if (strncmp(g_sock_buf, "GET /admin/dashboard", 20) == 0) {
+            page_admin_dashboard(g_page_buf, base_url);
+            send_response(new_socket, 200, "OK", g_page_buf);
         }
-        else if (strncmp(buffer, "POST /admin/election/create", 27) == 0) {
-            char *body_start = strstr(buffer, "\r\n\r\n");
+        else if (strncmp(g_sock_buf, "POST /admin/election/create", 27) == 0) {
+            char *body_start = strstr(g_sock_buf, "\r\n\r\n");
             if (body_start && election_count < MAX_ELECTIONS) {
                 body_start += 4;
                 Election *elec = &elections[election_count];
@@ -519,7 +524,7 @@ int main() {
             }
             send_redirect(new_socket, "/admin/dashboard");
         }
-        else if (strncmp(buffer, "GET /admin/election/", 20) == 0 && strstr(buffer, "/toggle")) {
+        else if (strncmp(g_sock_buf, "GET /admin/election/", 20) == 0 && strstr(g_sock_buf, "/toggle")) {
             char id_str[20] = {0};
             sscanf(path, "/admin/election/%19[^/]/toggle", id_str);
             int id = atoi(id_str);
@@ -531,8 +536,8 @@ int main() {
             }
             send_redirect(new_socket, "/admin/dashboard");
         }
-        else if (strncmp(buffer, "POST /admin/candidate/add", 25) == 0) {
-            char *body_start = strstr(buffer, "\r\n\r\n");
+        else if (strncmp(g_sock_buf, "POST /admin/candidate/add", 25) == 0) {
+            char *body_start = strstr(g_sock_buf, "\r\n\r\n");
             if (body_start) {
                 body_start += 4;
                 char elec_id_str[20] = {0};
@@ -546,7 +551,8 @@ int main() {
                         get_form_value(body_start, "party", cand->party, sizeof(cand->party));
                         if (cand->name[0] != '\0') {
                             elections[i].candidate_count++;
-                            printf("✅ Added candidate %s to election %d\n", cand->name, elec_id);
+                            printf("✅ Added candidate '%s' (%s) to election '%s' (ID: %d), total candidates: %d\n",
+                                   cand->name, cand->party, elections[i].title, elections[i].id, elections[i].candidate_count);
                         }
                         break;
                     }
@@ -554,17 +560,17 @@ int main() {
             }
             send_redirect(new_socket, "/admin/dashboard");
         }
-        else if (strncmp(buffer, "GET /vote/", 10) == 0) {
+        else if (strncmp(g_sock_buf, "GET /vote/", 10) == 0) {
             char id_str[20] = {0};
             sscanf(path, "/vote/%19[^/]", id_str);
-            page_vote(response_body, base_url, atoi(id_str), "");
-            send_response(new_socket, 200, "OK", response_body);
+            page_vote(g_page_buf, base_url, atoi(id_str), "");
+            send_response(new_socket, 200, "OK", g_page_buf);
         }
-        else if (strncmp(buffer, "POST /vote/", 11) == 0) {
+        else if (strncmp(g_sock_buf, "POST /vote/", 11) == 0) {
             char id_str[20] = {0};
             sscanf(path, "/vote/%19[^/]", id_str);
             int id = atoi(id_str);
-            char *body_start = strstr(buffer, "\r\n\r\n");
+            char *body_start = strstr(g_sock_buf, "\r\n\r\n");
             char voter_id[100] = {0}, cand_id_str[20] = {0};
             if (body_start) {
                 body_start += 4;
@@ -576,14 +582,14 @@ int main() {
             for (int i = 0; i < election_count; i++) {
                 if (elections[i].id == id && elections[i].active) {
                     if (voter_id[0] == '\0') {
-                        page_vote(response_body, base_url, id, "Please enter a valid Voter ID!");
-                        send_response(new_socket, 200, "OK", response_body);
+                        page_vote(g_page_buf, base_url, id, "Please enter a valid Voter ID!");
+                        send_response(new_socket, 200, "OK", g_page_buf);
                         voted = 1;
                         break;
                     }
                     if (voter_already_voted(&elections[i], voter_id)) {
-                        page_vote(response_body, base_url, id, "You have already voted!");
-                        send_response(new_socket, 200, "OK", response_body);
+                        page_vote(g_page_buf, base_url, id, "You have already voted!");
+                        send_response(new_socket, 200, "OK", g_page_buf);
                         voted = 1;
                         break;
                     }
@@ -592,33 +598,33 @@ int main() {
                         strncpy(elections[i].voter_ids[elections[i].voter_count], voter_id, sizeof(elections[i].voter_ids[0]) - 1);
                         elections[i].voter_ids[elections[i].voter_count][sizeof(elections[i].voter_ids[0]) - 1] = '\0';
                         elections[i].voter_count++;
-                        printf("🗳️ %s voted for %s\n", voter_id, elections[i].candidates[cand_id].name);
-                        page_success(response_body, base_url, id);
-                        send_response(new_socket, 200, "OK", response_body);
+                        printf("🗳️ %s voted for %s in election %d\n", voter_id, elections[i].candidates[cand_id].name, elections[i].id);
+                        page_success(g_page_buf, base_url, id);
+                        send_response(new_socket, 200, "OK", g_page_buf);
                         voted = 1;
                     }
                     break;
                 }
             }
             if (!voted) {
-                page_vote(response_body, base_url, id, "Invalid election!");
-                send_response(new_socket, 200, "OK", response_body);
+                page_vote(g_page_buf, base_url, id, "Invalid election or candidate!");
+                send_response(new_socket, 200, "OK", g_page_buf);
             }
         }
-        else if (strncmp(buffer, "GET /results/", 13) == 0) {
+        else if (strncmp(g_sock_buf, "GET /results/", 13) == 0) {
             char id_str[20] = {0};
             sscanf(path, "/results/%19[^/]", id_str);
-            page_results(response_body, base_url, atoi(id_str));
-            send_response(new_socket, 200, "OK", response_body);
+            page_results(g_page_buf, base_url, atoi(id_str));
+            send_response(new_socket, 200, "OK", g_page_buf);
         }
-        else if (strncmp(buffer, "GET /admin/logout", 17) == 0) {
+        else if (strncmp(g_sock_buf, "GET /admin/logout", 17) == 0) {
             send_redirect(new_socket, "/");
         }
         else {
             char body[2048];
             snprintf(body, sizeof(body), "<div class='content min-h-screen flex items-center justify-center'><h1 class='text-4xl font-semibold'>404</h1><a href='%s/' class='mt-4 px-6 py-2 rounded-full bg-white text-black'>Home</a></div>", base_url);
-            build_page(response_body, body);
-            send_response(new_socket, 404, "Not Found", response_body);
+            build_page(g_page_buf, body);
+            send_response(new_socket, 404, "Not Found", g_page_buf);
         }
         close(new_socket);
     }
