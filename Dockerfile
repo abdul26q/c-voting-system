@@ -1,11 +1,6 @@
 FROM gcc:latest
-
 WORKDIR /app
-
-COPY voting_server.c .
-
-RUN gcc voting_server.c -o voting_server
-
+COPY voting_system.c .
+RUN gcc voting_system.c -o voting_system
 EXPOSE 8080
-
-CMD ["./voting_server"]
+CMD ["./voting_system"]
